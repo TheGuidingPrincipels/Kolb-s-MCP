@@ -251,6 +251,145 @@ async def get_patterns_by_domain(
 
 
 @mcp.tool()
+async def get_patterns_efficient(
+    domain: str,
+    min_confidence: float = 0.5,
+    detail_level: str = "summary",
+    pattern_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """
+    Token-efficient hierarchical pattern retrieval.
+
+    Use this tool instead of get_patterns_by_domain for better token efficiency.
+
+    Detail levels:
+    - "summary": 20 tokens/pattern - IDs, short descriptions, metadata only
+                 Use for initial filtering and broad searches
+    - "preview": 60 tokens/pattern - Includes key triggers and status
+                 Use for ranking and identifying candidates
+    - "full": 300 tokens/pattern - Complete pattern details
+              Use only for final analysis of top matches
+
+    Args:
+        domain: Life domain to filter (work, health, relationships, learning, personal)
+        min_confidence: Minimum confidence threshold (0.0-1.0, default 0.5)
+        detail_level: "summary" | "preview" | "full" (default "summary")
+        pattern_ids: Optional list of specific pattern IDs to retrieve
+                     When provided, retrieves ONLY these patterns
+
+    Returns:
+        {
+            "success": bool,
+            "detail_level": str,
+            "count": int,
+            "estimated_tokens": int,  # Approximate token usage
+            "token_per_pattern": int,
+            "patterns": List[Dict]
+        }
+
+    Example Usage:
+        # Stage 1: Get summaries for filtering
+        summaries = get_patterns_efficient("work", detail_level="summary")
+        # Returns ~1,000 tokens for 50 patterns
+
+        # Stage 2: Get previews for top 10 candidates
+        previews = get_patterns_efficient(
+            "work",
+            detail_level="preview",
+            pattern_ids=["pat_123", "pat_456", ...]
+        )
+        # Returns ~600 tokens for 10 patterns
+
+        # Stage 3: Get full details for top 5
+        full = get_patterns_efficient(
+            "work",
+            detail_level="full",
+            pattern_ids=["pat_123", "pat_456", "pat_789", "pat_abc", "pat_def"]
+        )
+        # Returns ~1,500 tokens for 5 patterns
+    """
+    # Check database availability
+    if error := _check_db_available():
+        return error
+
+    # Token estimates per detail level
+    token_estimates = {
+        "summary": 20,
+        "preview": 60,
+        "full": 300
+    }
+
+    # Validate detail_level
+    if detail_level not in token_estimates:
+        return {
+            "success": False,
+            "error": f"Invalid detail_level: {detail_level}. Must be 'summary', 'preview', or 'full'",
+            "error_type": "validation"
+        }
+
+    try:
+        pool = await DatabasePool.get_pool()
+
+        async with pool.acquire() as conn:
+            if pattern_ids:
+                # Stage 2/3: Retrieve specific patterns by ID
+                if detail_level == "preview":
+                    rows = await conn.fetch(Q.GET_PATTERNS_PREVIEW, pattern_ids)
+                else:  # full
+                    rows = await conn.fetch(Q.GET_PATTERNS_BY_IDS_FULL, pattern_ids)
+            else:
+                # Stage 1: Broad retrieval by domain
+                if detail_level == "summary":
+                    rows = await conn.fetch(
+                        Q.GET_PATTERNS_SUMMARY,
+                        domain,
+                        min_confidence
+                    )
+                elif detail_level == "preview":
+                    # Get IDs from summary first, then preview
+                    summary_rows = await conn.fetch(
+                        Q.GET_PATTERNS_SUMMARY,
+                        domain,
+                        min_confidence
+                    )
+                    ids = [row['id'] for row in summary_rows[:10]]
+                    rows = await conn.fetch(Q.GET_PATTERNS_PREVIEW, ids)
+                else:  # full - limit to 5 for token efficiency
+                    rows = await conn.fetch(
+                        Q.GET_PATTERNS_BY_DOMAIN,
+                        domain,
+                        min_confidence,
+                        5
+                    )
+
+        patterns = [dict(row) for row in rows]
+        estimated_tokens = len(patterns) * token_estimates[detail_level]
+
+        logger.info(
+            f"✓ Retrieved {len(patterns)} patterns | "
+            f"Detail: {detail_level} | "
+            f"Est. tokens: ~{estimated_tokens}"
+        )
+
+        return {
+            "success": True,
+            "detail_level": detail_level,
+            "count": len(patterns),
+            "estimated_tokens": estimated_tokens,
+            "token_per_pattern": token_estimates[detail_level],
+            "patterns": patterns
+        }
+
+    except Exception as e:
+        logger.error(f"Error in get_patterns_efficient: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "server"
+        }
+
+
+@mcp.tool()
 async def update_pattern_confidence(update: PatternUpdate) -> Dict[str, Any]:
     """
     Update pattern confidence based on new evidence.

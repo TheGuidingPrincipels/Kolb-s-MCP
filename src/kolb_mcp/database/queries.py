@@ -328,3 +328,57 @@ SELECT
 FROM sessions
 WHERE session_date >= $1 AND session_date <= $2
 """
+
+# ============================================================================
+# HIERARCHICAL RETRIEVAL QUERIES (Token-Efficient - Phase 1)
+# ============================================================================
+
+GET_PATTERNS_SUMMARY = """
+SELECT
+    pattern_id as id,
+    LEFT(description, 50) || '...' as desc,
+    SUBSTRING(pattern_type, 1, 5) as type,
+    domains_affected as dom,
+    confidence_score as conf,
+    jsonb_array_length(triggers) as trig_cnt,
+    status as stat
+FROM behavioral_patterns
+WHERE $1 = ANY(domains_affected)
+  AND status IN ('hypothesis', 'testing', 'validated')
+  AND confidence_score >= $2
+ORDER BY confidence_score DESC
+LIMIT 50
+"""
+
+GET_PATTERNS_PREVIEW = """
+SELECT
+    bp.pattern_id as id,
+    LEFT(bp.description, 150) || '...' as desc,
+    bp.pattern_type as type,
+    bp.domains_affected as domains,
+    bp.confidence_score as confidence,
+    (
+        SELECT json_agg(elem)
+        FROM (
+            SELECT elem
+            FROM jsonb_array_elements_text(bp.triggers) elem
+            LIMIT 3
+        ) t
+    ) as key_triggers,
+    bp.frequency,
+    bp.status,
+    (SELECT COUNT(*) FROM pattern_experiments WHERE pattern_id = bp.pattern_id) as exp_count,
+    bp.last_validated::date as last_val
+FROM behavioral_patterns bp
+WHERE bp.pattern_id = ANY($1::text[])
+ORDER BY bp.confidence_score DESC
+LIMIT 10
+"""
+
+GET_PATTERNS_BY_IDS_FULL = """
+SELECT *
+FROM behavioral_patterns
+WHERE pattern_id = ANY($1::text[])
+ORDER BY confidence_score DESC
+LIMIT 5
+"""

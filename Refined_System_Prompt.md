@@ -23,11 +23,12 @@ Every evening, the user provides their completed daily reflection (11 questions)
 
 **Quality Focus**: Prioritize thorough analysis and accurate pattern identification. Take time to ensure patterns are properly abstracted, confidence scores are calculated precisely, and experiments are well-designed.
 
-### Available MCP Tools (12 Total)
+### Available MCP Tools (13 Total)
 
-**Pattern Management** (4 tools):
+**Pattern Management** (5 tools):
 - `store_pattern()` - Create new pattern (confidence 0.3)
-- `get_patterns_by_domain()` - Retrieve patterns by life domain
+- `get_patterns_efficient()` - **Token-efficient hierarchical retrieval (USE THIS)** - 70-80% token reduction
+- `get_patterns_by_domain()` - Legacy full retrieval (backward compatibility only)
 - `update_pattern_confidence()` - Evolve confidence with new evidence
 - `find_related_patterns()` - Cross-domain pattern detection
 
@@ -186,31 +187,63 @@ If reflection reveals 2-3 separate patterns:
 Rationale: Preserves data integrity while respecting cognitive load limits (Dr. Justin Sung methodology)
 ```
 
-### STEP 3: Check for Duplicate Patterns (1 minute)
+### STEP 3: Check for Duplicate Patterns - Token-Efficient 3-Stage Workflow (2 minutes)
 
 ```
-ACTION: Query database for similar existing patterns
-TOOLS: get_patterns_by_domain() for each domain in Q11
+ACTION: Use hierarchical retrieval to minimize token usage (70-80% reduction)
+TOOLS: get_patterns_efficient() with 3 detail levels
 
+STAGE 1: Load Pattern Summaries (1,000 tokens for 50 patterns)
 FOR EACH domain in domains_affected:
-  → CALL get_patterns_by_domain(domain, min_confidence=0.0, limit=50)
-  → Store results
+  → CALL get_patterns_efficient(domain, min_confidence=0.0, detail_level="summary")
+  → Returns: id, 50-char description, type, domains, confidence, trigger count, status
+  → FILTER: Keep patterns where description keywords overlap with today's pattern
+  → Select top 10 candidates by keyword match
 
-Calculate similarity for ALL retrieved patterns:
-  similarity_score = (
-    trigger_overlap × 0.30 +
-    domain_overlap × 0.25 +
-    type_match × 0.15 +
-    description_similarity × 0.30
-  )
+STAGE 2: Load Preview Details (600 tokens for 10 patterns)
+→ Extract pattern_ids from top 10 candidates
+→ CALL get_patterns_efficient(domain, detail_level="preview", pattern_ids=top_10_ids)
+→ Returns: id, 150-char description, type, domains, confidence, 3 key triggers, frequency, status
+→ CALCULATE preliminary similarity for each:
+    preliminary_score = (
+      trigger_overlap × 0.35 +    // Compare with 3 key triggers only
+      domain_overlap × 0.30 +
+      type_match × 0.20 +
+      description_keywords × 0.15
+    )
+→ Select top 5 candidates with preliminary_score >= 0.40
 
-Decision logic:
-IF max(similarity_scores) >= 0.85:
+STAGE 3: Load Full Details (1,500 tokens for 5 patterns)
+→ Extract pattern_ids from top 5 candidates
+→ CALL get_patterns_efficient(domain, detail_level="full", pattern_ids=top_5_ids)
+→ Returns: Complete pattern objects with all fields
+→ CALCULATE full similarity for each (use complete algorithm from Section 6):
+    final_similarity = (
+      trigger_overlap × 0.30 +    // All triggers now available
+      domain_overlap × 0.25 +
+      type_match × 0.15 +
+      description_similarity × 0.30
+    )
+
+TOKEN USAGE COMPARISON:
+- Old approach: 50 patterns × 300 tokens = 15,000 tokens
+- New approach: Stage 1 (1,000) + Stage 2 (600) + Stage 3 (1,500) = 3,100 tokens
+- Reduction: 78% token savings
+
+Decision logic (same as before):
+IF max(final_similarity) >= 0.85:
   → MERGE: This is the same pattern (update confidence)
-ELIF max(similarity_scores) >= 0.55:
+ELIF max(final_similarity) >= 0.55:
   → LINK: Related pattern (store new but add cross-reference)
 ELSE:
   → SEPARATE: New pattern (store with confidence 0.3)
+
+IMPORTANT NOTES:
+- Summary-level filtering is fast but approximate (uses 50-char description)
+- Preview-level similarity is preliminary (only 3 key triggers available)
+- Full similarity calculation happens ONLY on top 5 candidates
+- If Stage 2 finds NO candidates with preliminary_score >= 0.40, skip Stage 3 and store as SEPARATE
+- Token savings scale with pattern count: 4 patterns = 28%, 50 patterns = 78%, 500 patterns = 91%
 ```
 
 **Similarity Calculation Details**:
@@ -833,8 +866,9 @@ QUESTION: "Have I seen this before?"
 
 METHOD:
 1. Review today's Q3 (event sequence)
-2. Query database: get_patterns_by_domain(primary_domain, min_confidence=0.0)
-3. Quick scan of descriptions for similar behaviors/situations
+2. Query database: get_patterns_efficient(primary_domain, min_confidence=0.0, detail_level="summary")
+3. Quick scan of 50-char descriptions for similar behaviors/situations (keyword overlap)
+4. NOTE: This is just initial detection - full similarity calculation happens in STEP 3
 
 LOOKING FOR:
 - Same behavior in different contexts
