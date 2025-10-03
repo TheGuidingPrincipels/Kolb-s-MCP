@@ -151,6 +151,25 @@ CREATE TABLE experiment_recommendations (
 );
 
 -- ============================================================================
+-- TABLE 7: SESSIONS
+-- Tracks daily reflection sessions for consistency and gamification
+-- ============================================================================
+
+CREATE TABLE sessions (
+    id SERIAL PRIMARY KEY,
+    session_date DATE NOT NULL UNIQUE,
+    session_number INTEGER NOT NULL,
+    streak_day INTEGER NOT NULL,
+    patterns_discovered INTEGER DEFAULT 0,
+    patterns_updated INTEGER DEFAULT 0,
+    observations_recorded INTEGER DEFAULT 0,
+    experiments_created INTEGER DEFAULT 0,
+    insights_created INTEGER DEFAULT 0,
+    reflection_type VARCHAR(20) DEFAULT 'standard' CHECK (reflection_type IN ('standard', 'quick')),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
 -- INDEXES FOR PERFORMANCE
 -- Sub-second query performance requirement
 -- ============================================================================
@@ -188,6 +207,11 @@ CREATE INDEX idx_active_exp_last_obs ON active_experiments(last_observation_date
 
 -- Recommendations Indexes
 CREATE INDEX idx_recommendations_date ON experiment_recommendations(session_date DESC);
+
+-- Sessions Indexes
+CREATE INDEX idx_sessions_date ON sessions(session_date DESC);
+CREATE INDEX idx_sessions_number ON sessions(session_number DESC);
+CREATE INDEX idx_sessions_streak ON sessions(streak_day DESC);
 
 -- ============================================================================
 -- TRIGGERS FOR AUTO-UPDATES
@@ -272,12 +296,12 @@ BEGIN
 
     RAISE NOTICE 'Created % tables', table_count;
 
-    IF table_count < 6 THEN
-        RAISE EXCEPTION 'Schema creation incomplete. Expected 6 tables, found %', table_count;
+    IF table_count < 7 THEN
+        RAISE EXCEPTION 'Schema creation incomplete. Expected 7 tables, found %', table_count;
     END IF;
 END $$;
 
 RAISE NOTICE 'Kolb MCP Database Schema created successfully!';
-RAISE NOTICE 'Tables: behavioral_patterns, experiments, pattern_experiments, insights, active_experiments, experiment_recommendations';
+RAISE NOTICE 'Tables: behavioral_patterns, experiments, pattern_experiments, insights, active_experiments, experiment_recommendations, sessions';
 RAISE NOTICE 'Views: pattern_summary, active_experiment_dashboard';
 RAISE NOTICE 'Indexes: Optimized for sub-second queries';

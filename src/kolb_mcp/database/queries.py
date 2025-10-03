@@ -243,3 +243,88 @@ INSERT INTO experiment_recommendations
 (session_date, presented_experiments, selected_experiment, selection_reasoning)
 VALUES ($1, $2::jsonb, $3, $4)
 """
+
+# ============================================================================
+# SESSION QUERIES
+# ============================================================================
+
+INSERT_SESSION = """
+INSERT INTO sessions
+(session_date, session_number, streak_day, reflection_type)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (session_date) DO UPDATE
+SET reflection_type = EXCLUDED.reflection_type
+RETURNING *
+"""
+
+GET_SESSION_BY_DATE = """
+SELECT *
+FROM sessions
+WHERE session_date = $1
+"""
+
+GET_RECENT_SESSIONS = """
+SELECT session_date, session_number, streak_day
+FROM sessions
+ORDER BY session_date DESC
+LIMIT $1
+"""
+
+GET_ALL_SESSION_DATES = """
+SELECT session_date
+FROM sessions
+ORDER BY session_date DESC
+"""
+
+GET_WEEKLY_SESSIONS = """
+SELECT COUNT(*) as session_count
+FROM sessions
+WHERE session_date >= date_trunc('week', CURRENT_DATE)
+AND session_date <= CURRENT_DATE
+"""
+
+UPDATE_SESSION_STATS = """
+UPDATE sessions
+SET patterns_discovered = patterns_discovered + $2,
+    patterns_updated = patterns_updated + $3,
+    observations_recorded = observations_recorded + $4,
+    experiments_created = experiments_created + $5,
+    insights_created = insights_created + $6
+WHERE session_date = $1
+"""
+
+# Weekly synthesis queries (for Phase 3)
+GET_WEEKLY_PATTERNS = """
+SELECT
+    COUNT(*) as total,
+    SUM(CASE WHEN status IN ('testing', 'validated') THEN 1 ELSE 0 END) as validated,
+    array_agg(DISTINCT pattern_type) as types,
+    (SELECT array_agg(DISTINCT d) FROM (
+        SELECT unnest(domains_affected) as d FROM behavioral_patterns
+        WHERE DATE(created_at) >= $1 AND DATE(created_at) <= $2
+    ) domains_unnest) as domains
+FROM behavioral_patterns
+WHERE DATE(created_at) >= $1 AND DATE(created_at) <= $2
+"""
+
+GET_WEEKLY_EXPERIMENTS = """
+SELECT
+    COUNT(*) as total,
+    SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes,
+    SUM(CASE WHEN outcome = 'partial' THEN 1 ELSE 0 END) as partials,
+    array_agg(DISTINCT domain) as domains
+FROM experiments
+WHERE DATE(start_date) >= $1 AND DATE(start_date) <= $2
+"""
+
+GET_WEEK_SESSION_STATS = """
+SELECT
+    COUNT(*) as total_sessions,
+    SUM(patterns_discovered) as patterns_discovered,
+    SUM(patterns_updated) as patterns_updated,
+    SUM(observations_recorded) as observations_recorded,
+    SUM(experiments_created) as experiments_created,
+    SUM(insights_created) as insights_created
+FROM sessions
+WHERE session_date >= $1 AND session_date <= $2
+"""

@@ -100,6 +100,42 @@ def _generate_insight_id(type: str) -> str:
     return f"ins_{datetime.now().strftime('%Y_%m_%d')}_{type[:3]}"
 
 
+async def _calculate_streak() -> int:
+    """
+    Calculate current consecutive day streak from session history.
+
+    Returns:
+        Number of consecutive days with sessions (including today if session exists)
+    """
+    try:
+        pool = await DatabasePool.get_pool()
+        async with pool.acquire() as conn:
+            # Get all session dates
+            rows = await conn.fetch(Q.GET_ALL_SESSION_DATES)
+
+            if not rows:
+                return 0
+
+            session_dates = [row['session_date'] for row in rows]
+            sorted_dates = sorted(session_dates, reverse=True)
+
+            streak = 0
+            expected_date = date.today()
+
+            for session_date in sorted_dates:
+                if session_date == expected_date:
+                    streak += 1
+                    expected_date -= timedelta(days=1)
+                else:
+                    break
+
+            return streak
+
+    except Exception as e:
+        logger.error(f"Error calculating streak: {e}")
+        return 0
+
+
 # ============================================================================
 # PATTERN MANAGEMENT TOOLS
 # ============================================================================
@@ -134,6 +170,17 @@ async def store_pattern(pattern: PatternCreate) -> Dict[str, Any]:
                 pattern.frequency,
                 json.dumps(pattern.triggers),
                 pattern.confidence
+            )
+
+            # Update today's session stats
+            await conn.execute(
+                Q.UPDATE_SESSION_STATS,
+                date.today(),
+                1,  # patterns_discovered
+                0,  # patterns_updated
+                0,  # observations_recorded
+                0,  # experiments_created
+                0   # insights_created
             )
 
         logger.info(f"✓ Stored new pattern: {pattern_id}")
@@ -253,6 +300,17 @@ async def update_pattern_confidence(update: PatternUpdate) -> Dict[str, Any]:
                 update.new_confidence,
                 evolution_entry,
                 datetime.now()
+            )
+
+            # Update today's session stats
+            await conn.execute(
+                Q.UPDATE_SESSION_STATS,
+                date.today(),
+                0,  # patterns_discovered
+                1,  # patterns_updated
+                0,  # observations_recorded
+                0,  # experiments_created
+                0   # insights_created
             )
 
         logger.info(f"✓ Updated pattern {update.pattern_id}: {current['confidence_score']} → {update.new_confidence}")
@@ -380,6 +438,17 @@ async def create_experiment(experiment: ExperimentCreate) -> Dict[str, Any]:
                         0.8
                     )
 
+                # Update today's session stats
+                await conn.execute(
+                    Q.UPDATE_SESSION_STATS,
+                    date.today(),
+                    0,  # patterns_discovered
+                    0,  # patterns_updated
+                    0,  # observations_recorded
+                    1,  # experiments_created
+                    0   # insights_created
+                )
+
         logger.info(f"✓ Created experiment: {experiment_id}")
 
         return {
@@ -484,6 +553,17 @@ async def record_daily_observation(observation: ObservationCreate) -> Dict[str, 
                     Q.UPDATE_EXPERIMENT_OBSERVATIONS,
                     json.dumps(observations),
                     observation.experiment_id
+                )
+
+                # Update today's session stats
+                await conn.execute(
+                    Q.UPDATE_SESSION_STATS,
+                    date.today(),
+                    0,  # patterns_discovered
+                    0,  # patterns_updated
+                    1,  # observations_recorded
+                    0,  # experiments_created
+                    0   # insights_created
                 )
 
                 # Update tracking
@@ -637,6 +717,17 @@ async def create_insight(insight: InsightCreate) -> Dict[str, Any]:
                 insight.importance_score
             )
 
+            # Update today's session stats
+            await conn.execute(
+                Q.UPDATE_SESSION_STATS,
+                date.today(),
+                0,  # patterns_discovered
+                0,  # patterns_updated
+                0,  # observations_recorded
+                0,  # experiments_created
+                1   # insights_created
+            )
+
         logger.info(f"✓ Created insight: {insight_id} (importance: {insight.importance_score})")
 
         return {
@@ -741,15 +832,21 @@ async def calculate_compound_gains(days: int = 30) -> Dict[str, Any]:
 
 
 @mcp.tool()
-async def get_session_summary(target_date: Optional[str] = None) -> Dict[str, Any]:
+async def get_session_summary(
+    target_date: Optional[str] = None,
+    date_range: Optional[str] = None,
+    create_session: bool = True
+) -> Dict[str, Any]:
     """
-    Get summary of a specific day's session or today.
+    Get summary of a specific day's session or date range (for weekly synthesis).
 
     Args:
         target_date: ISO date string (YYYY-MM-DD), defaults to today
+        date_range: "today" (default), "this_week", "last_week" for weekly synthesis
+        create_session: If True, creates session record for today (default True)
 
     Returns:
-        Summary of patterns discovered, observations recorded, and activity stats
+        Summary with session metadata, patterns discovered, observations recorded, and activity stats
     """
     # Check database availability
     if error := _check_db_available():
@@ -759,30 +856,94 @@ async def get_session_summary(target_date: Optional[str] = None) -> Dict[str, An
         if target_date:
             summary_date = datetime.fromisoformat(target_date).date()
         else:
-            summary_date = datetime.now().date()
+            summary_date = date.today()
 
         pool = await DatabasePool.get_pool()
 
         async with pool.acquire() as conn:
-            # Get session stats
-            stats = await conn.fetchrow(
-                Q.GET_SESSION_SUMMARY,
-                summary_date
-            )
+            # Handle date range queries (for weekly synthesis - Phase 3)
+            if date_range in ["this_week", "last_week"]:
+                # Calculate week boundaries
+                if date_range == "this_week":
+                    week_start = summary_date - timedelta(days=summary_date.weekday())
+                    week_end = summary_date
+                else:  # last_week
+                    week_start = summary_date - timedelta(days=summary_date.weekday() + 7)
+                    week_end = week_start + timedelta(days=6)
+
+                # Get weekly stats
+                week_stats = await conn.fetchrow(Q.GET_WEEK_SESSION_STATS, week_start, week_end)
+
+                return {
+                    "success": True,
+                    "date_range": date_range,
+                    "week_start": str(week_start),
+                    "week_end": str(week_end),
+                    "total_sessions": week_stats['total_sessions'] or 0,
+                    "patterns_discovered": week_stats['patterns_discovered'] or 0,
+                    "patterns_updated": week_stats['patterns_updated'] or 0,
+                    "observations_recorded": week_stats['observations_recorded'] or 0,
+                    "experiments_created": week_stats['experiments_created'] or 0,
+                    "insights_created": week_stats['insights_created'] or 0
+                }
+
+            # Create or get today's session
+            session = await conn.fetchrow(Q.GET_SESSION_BY_DATE, summary_date)
+
+            if not session and create_session and summary_date == date.today():
+                # Calculate session number and streak
+                total_sessions = await conn.fetchval("SELECT COUNT(*) FROM sessions")
+                session_number = (total_sessions or 0) + 1
+                streak_day = await _calculate_streak() + 1  # Include today
+
+                # Create new session
+                session = await conn.fetchrow(
+                    Q.INSERT_SESSION,
+                    summary_date,
+                    session_number,
+                    streak_day,
+                    'standard'
+                )
+
+                logger.info(f"✓ Created session #{session_number} | Streak day {streak_day}")
 
             # Get active experiment count
             active_count = await conn.fetchval(Q.COUNT_ACTIVE_EXPERIMENTS)
 
-        logger.info(f"✓ Generated session summary for {summary_date}")
+            # Get weekly completion
+            weekly_sessions = await conn.fetchval(Q.GET_WEEKLY_SESSIONS)
 
-        return {
-            "success": True,
-            "date": str(summary_date),
-            "patterns_discovered": stats['patterns_discovered'] if stats else 0,
-            "observations_recorded": stats['observations_recorded'] if stats else 0,
-            "active_experiments": active_count or 0,
-            "session_completed": (stats['patterns_discovered'] > 0 or stats['observations_recorded'] > 0) if stats else False
-        }
+        if session:
+            return {
+                "success": True,
+                "date": str(summary_date),
+                "session_number": session['session_number'],
+                "streak_day": session['streak_day'],
+                "weekly_completion": f"{weekly_sessions or 0}/7",
+                "patterns_discovered": session['patterns_discovered'],
+                "patterns_updated": session['patterns_updated'],
+                "observations_recorded": session['observations_recorded'],
+                "experiments_created": session['experiments_created'],
+                "insights_created": session['insights_created'],
+                "active_experiments": active_count or 0,
+                "session_completed": (session['patterns_discovered'] > 0 or session['observations_recorded'] > 0)
+            }
+        else:
+            # No session exists for this date
+            return {
+                "success": True,
+                "date": str(summary_date),
+                "session_number": 0,
+                "streak_day": 0,
+                "weekly_completion": f"{weekly_sessions or 0}/7",
+                "patterns_discovered": 0,
+                "patterns_updated": 0,
+                "observations_recorded": 0,
+                "experiments_created": 0,
+                "insights_created": 0,
+                "active_experiments": active_count or 0,
+                "session_completed": False
+            }
 
     except Exception as e:
         logger.error(f"Error in get_session_summary: {e}", exc_info=True)
